@@ -1,0 +1,20 @@
+test.xlsx
+ui.py
+Контрольная сумма файлов.xlsx
+__pycache__/sorter.cpython-312.pyc
+__pycache__/ui.cpython-312.pyc
+build/Renamer/Analysis-00.toc
+build/Renamer/base_library.zip
+build/Renamer/EXE-00.toc
+build/Renamer/PKG-00.toc
+build/Renamer/PYZ-00.pyz
+build/Renamer/PYZ-00.toc
+build/Renamer/Renamer.pkg
+build/Renamer/warn-Renamer.txt
+build/Renamer/xref-Renamer.html
+build/Renamer/localpycs/pyimod01_archive.pyc
+build/Renamer/localpycs/pyimod02_importers.pyc
+build/Renamer/localpycs/pyimod03_ctypes.pyc
+build/Renamer/localpycs/pyimod04_pywin32.pyc
+build/Renamer/localpycs/struct.pyc
+dist/Sorter.exe
