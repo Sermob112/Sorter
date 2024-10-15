@@ -109,52 +109,70 @@ class Sorter():
 
     def extract_prefix(self, file_name):
         """
-        Извлекает префикс, который допускает как кириллические, так и латинские символы.
+        Преобразует имя файла в формат HBXXX.XXXXXX.XXX, добавляя точки между частями.
         Преобразует кириллицу в латиницу перед проверкой.
         """
         # Заменяем кириллические символы на латинские
         file_name = self.replace_cyrillic_to_latin(file_name)
 
-        # Проверяем, что имя начинается с 'HB' (в латинице или кириллице)
-        match = re.match(r'^(HB\w{3})([\s.-]?)(\w{3,7})', file_name)
+        # Ищем префикс, который начинается с 'HB', за которым идут 3 цифры, 6 цифр и 3 или более символов
+        match = re.match(r'^(HB\d{3})[\s.-]?(\d{6})', file_name)
+
         if match:
-            # Используем найденный разделитель (если он есть)
-            separator = match.group(2) if match.group(2) else '.'
-            return f"{match.group(1)}{separator}{match.group(3)}"
+            # Добавляем точки между частями
+            part1 = match.group(1)  # HBXXX
+            part2 = match.group(2)  # XXXXXX
+
+
+            # Возвращаем префикс в формате HBXXX.XXXXXX.XXX
+            return f"{part1}.{part2}"
+        
         return None
 
     
     def move_files_to_folders(self, destination_folder):
         """
-        Распределение файлов по папкам на основе префикса XXXXX.XXXXXX и расширения файла.
-        Дубликаты удаляются.
+        Распределение файлов по папкам на основе префикса, системы ЕСКД РФ и обработки неправильных форматов.
         """
-        # Получаем список файлов
         file_names = self.get_file_names()
-
-        # Словарь для хранения встречающихся имен файлов (чтобы избежать дубликатов)
         seen = {}
 
-        # Проход по всем файлам
         for file_name in file_names:
-            # Очищаем имя файла
-            clean_name = self.clean_file_name(file_name)
-
-            # Извлекаем префикс
-            prefix = self.extract_prefix(clean_name)
-
-            # Определяем целевую папку на основе префикса
+            # clean_name = self.clean_file_name(file_name)
+            prefix = self.extract_prefix(file_name)
+            lat_file_name = self.replace_cyrillic_to_latin(file_name)
             if prefix:
-                target_folder = os.path.join(destination_folder, prefix)
+                project_code = prefix[:5]  # Например, HB600
+                project_number = prefix[6:]  # Например, 360063
+                # Проверка, соответствует ли имя файла формату HBXXX.XXXXXX
+                if re.match(r'^HB\d{3}\.\d{6}', prefix):
+                    # Разбиваем префикс по частям
+                    # project_code = prefix[:5]  # Например, HB600
+                    # project_number = prefix[5:]  # Например, 360063
+                    
+                    # Создаем вложенные папки по ЕСКД (36 -> 360 -> 3600 -> 36006 -> 360063)
+                    target_folder = os.path.join(destination_folder, project_code)  # Папка проекта
+                    for i in range(2, len(project_number) + 1):
+                        target_folder = os.path.join(target_folder, project_number[:i])
+                else:
+                    # Если файл не соответствует формату, отправляем в папку "Прочие файлы"
+                    target_folder = os.path.join(destination_folder, project_code, "Прочие файлы")
+                
+            elif re.match(r'^HB\d{3}-\d{3}', lat_file_name):
+                project_code = lat_file_name[:5]  # Извлекаем проект HBXXX
+                target_folder = os.path.join(destination_folder, project_code, "Письма проектировщика")  # Папка "Письмо проекта"
+
+            elif re.match(r'^120-\d{3}', lat_file_name):
+                # Все файлы 120-XXX перемещаются в папку "ОССЗ.Письма"
+                target_folder = os.path.join(destination_folder, "ОССЗ", "Письма")
             else:
                 target_folder = os.path.join(destination_folder, "Прочие документы")
-
-            # Извлекаем расширение файла и создаем подпапку
-            extension = os.path.splitext(file_name)[1][1:].lower()  # Получаем расширение файла без точки
+            # Извлекаем расширение файла и создаем подпапку для расширения
+            extension = os.path.splitext(file_name)[1][1:].lower()
             if extension:
-                target_folder = os.path.join(target_folder, extension)  # Добавляем подпапку с расширением
+                target_folder = os.path.join(target_folder, extension)
 
-            # Создаем папку, если ее нет
+            # Создаем папки, если они не существуют
             if not os.path.exists(target_folder):
                 os.makedirs(target_folder)
 
@@ -165,12 +183,12 @@ class Sorter():
             dest_path = os.path.join(target_folder, file_name)
 
             # Проверяем, не является ли файл дубликатом
-            if clean_name not in seen:
-                # Перемещаем файл в целевую папку
-                shutil.copy(src_path, dest_path)
-                seen[clean_name] = True  # Добавляем файл в список встреченных
-            # else:
-            #     # Если файл дубликат, удаляем его
-            #     os.remove(src_path)
+            if file_name not in seen:
+                shutil.copy(src_path, dest_path)  # Перемещаем файл
+                seen[file_name] = True
+    #     else:
+    #         os.remove(src_path)  # Удаляем дубликат
 
-        print("Файлы успешно распределены по папкам.")
+    # logging.info("Файлы успешно распределены по папкам.")
+
+        
