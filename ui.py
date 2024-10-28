@@ -1,10 +1,10 @@
 import sys
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QLabel, QPushButton, QLineEdit, QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox
+    QApplication, QWidget, QLabel, QPushButton, QLineEdit, QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox,QCheckBox
 )
 from PySide6.QtCore import Qt
 from sorter import Sorter
-
+from excel import ExcelGenerator
 class DuplicateChecker(QWidget):
     def __init__(self):
         super().__init__()
@@ -30,7 +30,8 @@ class DuplicateChecker(QWidget):
         # Поле для отображения количества дубликатов
         self.label_duplicates = QLabel("Количество дубликатов:")
         self.label_files_count = QLabel("Количество файлов:")
-       
+        self.checkboxMove = QCheckBox("Переместить файлы.")
+        self.checkboxStay = QCheckBox("Перемещать файлы если соответсвуют формату")
         # Добавляем элементы в интерфейс
         self.layout.addWidget(self.label_folder1)
         self.layout.addWidget(self.path_folder1)
@@ -42,8 +43,8 @@ class DuplicateChecker(QWidget):
 
         self.layout.addWidget(self.label_files_count)
         self.layout.addWidget(self.label_duplicates)
-
-
+        self.layout.addWidget(self.checkboxMove)
+        self.layout.addWidget(self.checkboxStay)
         # Нижний горизонтальный layout для кнопок
         self.button_layout = QHBoxLayout()
 
@@ -91,7 +92,7 @@ class DuplicateChecker(QWidget):
         if not hasattr(self, 'directory_path') or not self.directory_path:
             self.export_files_with_notification("Выберите папку с файлами, которую нужно сортировать")
             return 
-        self.sorter = Sorter(self.directory_path)
+        self.sorter = ExcelGenerator(self.directory_path)
         self.label_files_count.setText(f"Количество файлов: {str(self.sorter.count_files())}")
         self.sorter.export_to_xlsx("Контрольная сумма файлов.xlsx")
         self.export_files_with_notification("Сгенерирован файл: 'Контрольная сумма файлов.xlsx' в корневой папке программы")
@@ -102,10 +103,13 @@ class DuplicateChecker(QWidget):
 
 
     def generate_sort(self):
+        self.sorter = Sorter(self.directory_path)
         if not hasattr(self, 'directory_path_for_sort') or not self.directory_path_for_sort:
             self.export_files_with_notification("Выберите папку, в которую будут перемещены отсортированные файлы")
             return 
-        self.sorter.move_files_to_folders(self.directory_path_for_sort)
+        status =  self.checkboxMove.isChecked()
+        statusS =  self.checkboxStay.isChecked()
+        self.sorter.move_files_to_folders(self.directory_path_for_sort,status,statusS)
         self.export_files_with_notification("Готово")
 
 
