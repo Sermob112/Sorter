@@ -12,27 +12,25 @@ class DuplicateChecker(QWidget):
         self.setWindowTitle("Сортировщик")
         self.setGeometry(100, 100, 400, 300)
         
-        # Основной layout
+ 
         self.layout = QVBoxLayout()
 
-        # Поле для первой папки
+   
         self.label_folder1 = QLabel("Выберите папку с файлами, которую нужно сортировать:")
         self.button_folder1 = QPushButton("Выбрать папку")
         self.path_folder1 = QLineEdit()
         self.button_folder1.clicked.connect(self.select_folder1)
 
-        # Поле для второй папки
         self.label_folder2 = QLabel("Выберите папку, в которую будут скопированы сортированные файлы:")
         self.button_folder2 = QPushButton("Выбрать папку")
         self.path_folder2 = QLineEdit()
         self.button_folder2.clicked.connect(self.select_folder2)
 
-        # Поле для отображения количества дубликатов
         self.label_duplicates = QLabel("Количество дубликатов:")
         self.label_files_count = QLabel("Количество файлов:")
         self.checkboxMove = QCheckBox("Переместить файлы.")
-        self.checkboxStay = QCheckBox("Перемещать файлы если соответсвуют формату")
-        # Добавляем элементы в интерфейс
+        self.checkboxStay = QCheckBox("Переместить\Копировать файлы если соответсвуют формату.")
+ 
         self.layout.addWidget(self.label_folder1)
         self.layout.addWidget(self.path_folder1)
         self.layout.addWidget(self.button_folder1)
@@ -45,31 +43,31 @@ class DuplicateChecker(QWidget):
         self.layout.addWidget(self.label_duplicates)
         self.layout.addWidget(self.checkboxMove)
         self.layout.addWidget(self.checkboxStay)
-        # Нижний горизонтальный layout для кнопок
+
         self.button_layout = QHBoxLayout()
 
-        # Кнопка "Сортировать"
+
         self.button_check = QPushButton("Проверить")
         self.button_check.clicked.connect(self.check_folders)
 
-        # Кнопка "Сгенерировать XLSX"
+
         self.button_sort = QPushButton("Сортировать")
         self.button_sort.clicked.connect(self.generate_sort)
+        self.button_report = QPushButton("Сгенерировать отчет")
+        self.button_report.clicked.connect(self.generate_report)
 
-        # Добавляем кнопки в горизонтальный layout
-        self.button_layout.addStretch()  # Добавляем растяжение для кнопок в конце
+        self.button_layout.addStretch()  
         self.button_layout.addWidget(self.button_check)
-        # self.button_layout.addWidget(self.button_sort)
 
-        # Добавляем основной layout и layout кнопок
-        self.layout.addStretch()  # Добавляем растяжение между верхней частью и кнопками
+        self.layout.addStretch() 
         self.layout.addLayout(self.button_layout)
+
 
         self.setLayout(self.layout)
 
     def export_files_with_notification(self,text):
 
-        # Отображаем сообщение об успешном сохранении
+
         msg_box = QMessageBox()
         msg_box.setIcon(QMessageBox.Information)
         msg_box.setWindowTitle("Внимание!")
@@ -92,11 +90,11 @@ class DuplicateChecker(QWidget):
         if not hasattr(self, 'directory_path') or not self.directory_path:
             self.export_files_with_notification("Выберите папку с файлами, которую нужно сортировать")
             return 
-        self.sorter = ExcelGenerator(self.directory_path)
-        self.label_files_count.setText(f"Количество файлов: {str(self.sorter.count_files())}")
-        self.sorter.export_to_xlsx("Контрольная сумма файлов.xlsx")
+        self.excel_generator = ExcelGenerator(self.directory_path)
+        self.label_files_count.setText(f"Количество файлов: {str(self.excel_generator.count_files())}")
+        self.excel_generator.export_to_xlsx("Контрольная сумма файлов.xlsx")
         self.export_files_with_notification("Сгенерирован файл: 'Контрольная сумма файлов.xlsx' в корневой папке программы")
-        self.label_duplicates.setText(f"Количество дубликатов: {str(self.sorter.duplicate_counter)}")
+        self.label_duplicates.setText(f"Количество дубликатов: {str(self.excel_generator.duplicate_counter)}")
         self.button_layout.addWidget(self.button_sort)
 
         # self.duplicate_count.setText(str(self.sorter.count_files()))
@@ -110,6 +108,13 @@ class DuplicateChecker(QWidget):
         status =  self.checkboxMove.isChecked()
         statusS =  self.checkboxStay.isChecked()
         self.sorter.move_files_to_folders(self.directory_path_for_sort,status,statusS)
+        self.button_layout.addWidget(self.button_report)
         self.export_files_with_notification("Готово")
 
+    def generate_report(self):
+        try:
+            self.excel_generator.generate_hierarchy_report(self.directory_path_for_sort)
+            self.export_files_with_notification("Отчет сгенерирован!")
+        except :
+            self.export_files_with_notification("Ошибка генерации отчета!")
 

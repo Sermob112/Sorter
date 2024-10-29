@@ -1,7 +1,9 @@
 from openpyxl import Workbook,load_workbook
 from openpyxl.styles import PatternFill
+from collections import defaultdict
 import re
 import os
+import pandas as pd
 class ExcelGenerator():
     def __init__(self, folder_path):
         self.folder_path = folder_path
@@ -106,3 +108,58 @@ class ExcelGenerator():
             file_names.extend(files) 
 
         return file_names
+    
+    def generate_hierarchy_report(self, root_folder, excel_path="Отчет по файлам.xlsx"):
+        """
+        Генерирует сводную таблицу в Excel для первых четырех уровней иерархии с информацией о расширениях файлов.
+        Также включает папки-исключения "ОССЗ - Письма" и "ОССЗ - Письма проектировщика" как второй класс с указанным главным классом.
+        """
+       
+        hierarchy_data = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int)))))
+
+        for root, dirs, files in os.walk(root_folder):
+            rel_path = os.path.relpath(root, root_folder).split(os.sep)
+
+            if len(rel_path) >= 4:
+                main_class, first_class, second_class, third_class = rel_path[:4]
+               
+                for file_name in files:
+                    extension = os.path.splitext(file_name)[1][1:].lower()
+                    hierarchy_data[main_class][first_class][second_class][third_class][extension] += 1
+        
+
+            elif len(rel_path) >= 2:
+                main_class, potential_folder = rel_path[:2]
+                if "ОССЗ - Письма"in potential_folder or "ОССЗ - Письма проектировщика" in potential_folder:
+                    second_class = potential_folder
+                    for file_name in files:
+                        extension = os.path.splitext(file_name)[1][1:].lower()
+                        hierarchy_data[main_class][None][second_class][None][extension] += 1
+                elif "Прочие документы" in main_class:
+             
+                    for file_name in files:
+                        extension = os.path.splitext(file_name)[1][1:].lower()
+                        hierarchy_data[main_class][None][None][None][extension] += 1
+     
+        report_data = []
+
+        for main_class, first_classes in hierarchy_data.items():
+            for first_class, second_classes in first_classes.items():
+                for second_class, third_classes in second_classes.items():
+                    for third_class, extensions in third_classes.items():
+                        row = {
+                            "Проект": main_class,
+                            "Классификатор код 1": first_class or "",
+                            "Классификатор код 2": second_class,
+                            "Классификатор код 3": third_class or ""
+                        }
+                        for ext, count in extensions.items():
+                            row[ext] = count
+                        report_data.append(row)
+
+
+        df = pd.DataFrame(report_data)
+        df.fillna(0, inplace=True)  
+
+        with pd.ExcelWriter(excel_path) as writer:
+            df.to_excel(writer, index=False, sheet_name="Отчет")
