@@ -1,13 +1,16 @@
 import os
 from model import File
+from PySide6.QtCore import QObject, Signal
 import re
 import shutil
-class Sorter():
+class Sorter(QObject):
+    file_moved = Signal(int)
     def __init__(self, folder_path):
+        super().__init__()
         self.folder_path = folder_path
 
     def get_file_names(self):
-       
+        print("Запуск метода get_file_names") 
         if not os.path.isdir(self.folder_path):
             print(f"Папка {self.folder_path} не существует")
             return []
@@ -44,6 +47,7 @@ class Sorter():
         Читает данные из базы данных и создает словарь.
         Ключом является номер (например, 36), значением — название.
         """
+        print("Запуск метода create_escd_dict") 
         escd_dict = {}
     
         
@@ -51,8 +55,29 @@ class Sorter():
             escd_dict[file.num] = file.name  # {'36': 'Суда, судовое оборудование'}
         
         return escd_dict
+    def count_files(self,statusStay):
+        file_names = self.get_file_names()
+        count = 0
+        for file_name in file_names:
+            lat_file_name = self.replace_cyrillic_to_latin(file_name)
+            prefix = self.extract_prefix(file_name)
+            try:
+                if prefix:
+                    count += 1
+                elif re.match(r'^120-\d{3}', lat_file_name) and re.search(r'(HB\d{3})', lat_file_name):
+                    count += 1
+                elif re.match(r'^HB\d{3}-\d{3}', lat_file_name):
+                    count += 1
+                elif statusStay == False:
+                    count += 1
 
+                # target_folder = self.append_extension_folder(target_folder, file_name)
+                # self.copy_file_to_folder(file_name, target_folder, seen, statusMove)
+            finally:
+                continue
+        return count
     def move_files_to_folders(self, destination_folder,statusMove,statusStay):
+      
         file_names = self.get_file_names()
         escd_dict = self.create_escd_dict()
         seen = {}
@@ -121,10 +146,14 @@ class Sorter():
             if file_name not in seen:
                 shutil.copy(src_path, dest_path)
                 seen[file_name] = True
+                self.file_moved.emit(1)
+                
         else:
             if file_name not in seen:
                 shutil.move(src_path, dest_path)
                 seen[file_name] = True
+                self.file_moved.emit(1)
+                
             
 
         
