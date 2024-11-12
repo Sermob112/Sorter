@@ -113,35 +113,32 @@ class DuplicateChecker(QWidget):
          # Создаем поток
         self.thread = QThread()
         self.sorter.moveToThread(self.thread)
-        # status =  self.checkboxMove.isChecked()
-        # statusS =  self.checkboxStay.isChecked()
-        # self.sorter.move_files_to_folders(self.directory_path_for_sort,status,statusS,self.update_files_moved_count)
-        # self.button_layout.addWidget(self.button_report)
-        # self.export_files_with_notification("Готово")
+
         self.sorter.file_moved.connect(self.update_files_moved_count)
+        self.sorter.finished.connect(self.thread.quit)  
+        self.thread.finished.connect(self.thread.deleteLater)
         self.thread.started.connect(lambda: self.sorter.move_files_to_folders(
             self.directory_path_for_sort, 
             self.checkboxMove.isChecked(), 
             self.checkboxStay.isChecked()
         ))
-        
+
+        self.fc = self.sorter.count_files(self.checkboxStay.isChecked())
         self.thread.start()
-        self.thread.finished.connect(self.thread.deleteLater)
-        # self.export_files_with_notification("Готово")
+
     def generate_report(self):
         try:
             self.excel_generator.generate_hierarchy_report(self.directory_path_for_sort)
             self.export_files_with_notification("Отчет сгенерирован!")
         except :
             self.export_files_with_notification("Ошибка генерации отчета!")
+
     @Slot(int)
     def update_files_moved_count(self,_):
-        
         self.files_moved_count += 1
-        print(f"Файлов перемещено: {self.files_moved_count}") 
-        self.label_files_moved_count.setText(f"Количество файлов:{ self.files_moved_count}")
+        self.label_files_moved_count.setText(f"Количество файлов:{ self.files_moved_count} из {self.fc}")
         QApplication.processEvents()  
-
+   
 # if __name__ == "__main__":
 #     app = QApplication(sys.argv)
 #     window = DuplicateChecker()

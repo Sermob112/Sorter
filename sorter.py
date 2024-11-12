@@ -5,10 +5,11 @@ import re
 import shutil
 class Sorter(QObject):
     file_moved = Signal(int)
+    finished = Signal()
     def __init__(self, folder_path):
         super().__init__()
         self.folder_path = folder_path
-
+        
     def get_file_names(self):
         print("Запуск метода get_file_names") 
         if not os.path.isdir(self.folder_path):
@@ -103,6 +104,9 @@ class Sorter(QObject):
                 # self.copy_file_to_folder(file_name, target_folder, seen, statusMove)
             finally:
                 continue
+        
+        self.finished.emit()
+            
     def moveable (self,target_folder, file_name,seen,statusMove):
         target_folder = self.append_extension_folder(target_folder, file_name)
         self.copy_file_to_folder(file_name, target_folder, seen, statusMove)
@@ -153,6 +157,7 @@ class Sorter(QObject):
                 shutil.move(src_path, dest_path)
                 seen[file_name] = True
                 self.file_moved.emit(1)
+        
                 
             
 
