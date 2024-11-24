@@ -31,7 +31,7 @@ class DuplicateChecker(QWidget):
         self.label_duplicates = QLabel("Количество дубликатов:")
         self.label_files_count = QLabel("Количество файлов:")
         self.checkboxMove = QCheckBox("Переместить файлы.")
-        self.checkboxStay = QCheckBox("Переместить\Копировать файлы если соответсвуют формату.")
+        self.checkboxStay = QCheckBox("Переместить\Копировать файлы, если соответсвуют формату.")
         self.label_files_moved_count = QLabel("Файлов перемещено: 0")
  
         self.layout.addWidget(self.label_folder1)
@@ -116,6 +116,8 @@ class DuplicateChecker(QWidget):
 
         self.sorter.file_moved.connect(self.update_files_moved_count)
         self.sorter.finished.connect(self.thread.quit)  
+        self.sorter.finished.connect(lambda: self.export_files_with_notification("Сортировка закончена"))
+        
         self.thread.finished.connect(self.thread.deleteLater)
         self.thread.started.connect(lambda: self.sorter.move_files_to_folders(
             self.directory_path_for_sort, 
@@ -125,7 +127,8 @@ class DuplicateChecker(QWidget):
 
         self.fc = self.sorter.count_files(self.checkboxStay.isChecked())
         self.thread.start()
-
+      
+        self.button_layout.addWidget(self.button_report)
     def generate_report(self):
         try:
             self.excel_generator.generate_hierarchy_report(self.directory_path_for_sort)

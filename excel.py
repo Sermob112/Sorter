@@ -7,7 +7,7 @@ import pandas as pd
 class ExcelGenerator():
     def __init__(self, folder_path):
         self.folder_path = folder_path
-
+        self.duplicate_counter = 0
     def export_to_xlsx(self, output_file):
         """
         Экспорт списка файлов и дубликатов в xlsx с добавлением расширения и размера файла.
@@ -68,7 +68,7 @@ class ExcelGenerator():
 
 
     def find_duplicates(self, file_names):
-        self.duplicate_counter = 0
+        
         duplicates = []
         seen = {}
 
