@@ -1,21 +1,22 @@
+
 import sys
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QLabel, QPushButton, QLineEdit, QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QCheckBox, QTabWidget
+    QApplication, QWidget, QLabel, QPushButton, QLineEdit, QVBoxLayout, 
+    QHBoxLayout, QFileDialog, QMessageBox, QCheckBox, QTabWidget, QTextEdit
 )
-from PySide6.QtCore import Qt,Signal,Slot
+from PySide6.QtCore import *
 from sorter import Sorter
 from excel import ExcelGenerator
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 from ExmWritter import *
-# В начале добавьте
 import traceback
 class DuplicateChecker(QWidget):
     def __init__(self):
         super().__init__()
         
         self.setWindowTitle("Сортировщик и XML генератор")
-        self.setGeometry(100, 100, 600, 400)
+        self.setGeometry(100, 100, 800, 850)
         
         self.tabs = QTabWidget()
         self.tabs.addTab(self.create_sorter_tab(), "Сортировщик")
@@ -23,7 +24,47 @@ class DuplicateChecker(QWidget):
         
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.tabs)
+
+        layout = QVBoxLayout()
+
+        #  поле для логов
+        self.log_label = QLabel("Лог ошибок:")
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(350)
+        
+        main_layout.addWidget(self.log_label)
+        main_layout.addWidget(self.log_text)
+
+
+        self.control_buttons_layout = QHBoxLayout()
+    
+
+        # кнопки управления потоком
+        # self.button_pause = QPushButton("Пауза")
+        # self.button_pause.setEnabled(False)
+        # self.button_pause.clicked.connect(self.pause_sorting)
+        
+        self.button_stop = QPushButton("Стоп") 
+        self.button_stop.setEnabled(False)
+        self.button_stop.clicked.connect(self.stop_sorting)
+        
+        # self.control_buttons_layout.addWidget(self.button_pause)
+        self.control_buttons_layout.addWidget(self.button_stop)
+        
+        layout.addLayout(self.control_buttons_layout)
+        main_layout.addLayout(layout)
         self.setLayout(main_layout)
+
+
+    @Slot(str)
+    def log_error(self, message):
+        """Слот для получения сообщений из Sorter"""
+        self.log_text.append(message)
+        self.log_text.verticalScrollBar().setValue(
+            self.log_text.verticalScrollBar().maximum()
+        )
+        QApplication.processEvents()
 
     def create_sorter_tab(self):
         sorter_tab = QWidget()
@@ -159,8 +200,8 @@ class DuplicateChecker(QWidget):
             
             self.button_layout.addWidget(self.button_sort)
         except Exception as e:
-            print(f"[Ошибка] Ошибка при проверке папок: {e}")
-            traceback.print_exc()
+            error_msg = f"[Ошибка] Ошибка при проверке папок: {e}\n{traceback.format_exc()}"
+            self.log_error(error_msg)
             self.export_files_with_notification("Произошла ошибка при проверке папок.")
 
         # self.duplicate_count.setText(str(self.sorter.count_files()))
@@ -183,11 +224,12 @@ class DuplicateChecker(QWidget):
 
             self.export_files_with_notification("XML файл успешно сгенерирован!")
         except Exception as e:
-            print(f"[Ошибка] Ошибка генерации XML: {e}")
-            traceback.print_exc()
+            error_msg = f"[Ошибка] Ошибка генерации XML: {e}\n{traceback.format_exc()}"
+            self.log_error(error_msg)
             self.export_files_with_notification("Ошибка генерации XML.")
 
     def generate_sort(self):
+        self.log_text.clear()
         self.files_moved_count = 0  
         try:
             if not hasattr(self, 'directory_path_for_sort') or not self.directory_path_for_sort:
@@ -196,11 +238,14 @@ class DuplicateChecker(QWidget):
 
             self.sorter = Sorter(self.directory_path)
             self.thread = QThread()
-            self.sorter.moveToThread(self.thread)
-
+            # Подключаем сигналы
+            self.sorter.log_message.connect(self.log_error)
             self.sorter.file_moved.connect(self.update_files_moved_count)
             self.sorter.finished.connect(self.thread.quit)
-            self.sorter.finished.connect(lambda: self.export_files_with_notification("Сортировка закончена"))
+            self.sorter.finished.connect(self.sorting_finished)
+            
+        
+            self.sorter.moveToThread(self.thread)
             self.thread.finished.connect(self.thread.deleteLater)
 
             self.thread.started.connect(lambda: self.sorter.move_files_to_folders(
@@ -210,12 +255,18 @@ class DuplicateChecker(QWidget):
             ))
 
             self.fc = self.sorter.count_files(self.checkboxStay.isChecked())
+
+            #  кнопки управления
+            # self.button_pause.setEnabled(True)
+            self.button_stop.setEnabled(True)
+            self.button_sort.setEnabled(False)
+
             self.thread.start()
 
             self.button_layout.addWidget(self.button_report)
         except Exception as e:
-            print(f"[Ошибка] Ошибка при запуске сортировки: {e}")
-            traceback.print_exc()
+            error_msg = f"[Ошибка] Ошибка при запуске сортировки: {e}\n{traceback.format_exc()}"
+            self.log_error(error_msg)
             self.export_files_with_notification("Ошибка запуска сортировки.")
 
     def generate_report(self):
@@ -227,10 +278,58 @@ class DuplicateChecker(QWidget):
             self.excel_generator.generate_hierarchy_report(self.directory_path_for_sort)
             self.export_files_with_notification("Отчет сгенерирован!")
         except Exception as e:
-            print(f"[Ошибка] Ошибка при генерации отчета: {e}")
-            traceback.print_exc()
+            error_msg = f"[Ошибка] Ошибка при генерации отчета: {e}\n{traceback.format_exc()}"
+            self.log_error(error_msg)
             self.export_files_with_notification("Ошибка генерации отчета.")
+    def pause_sorting(self):
+        """Постановка на паузу с защитой от зависания"""
+        try:
+            if not hasattr(self, 'sorter') or not hasattr(self, 'thread'):
+                return
 
+            if self.button_pause.text() == "Пауза":
+                # Асинхронный вызов через очередь событий
+                QTimer.singleShot(0, lambda: (
+                    self.sorter.pause(),
+                    QApplication.processEvents()  # Принудительная обработка событий
+                ))
+                # self.button_pause.setText("Продолжить")
+            else:
+                QTimer.singleShot(0, lambda: (
+                    self.sorter.resume(),
+                    QApplication.processEvents()
+                ))
+                self.button_pause.setText("Пауза")
+        except Exception as e:
+            self.log_error(f"Ошибка паузы: {str(e)}")
+            # self.button_pause.setText("Пауза")  # Сброс состояния кнопки при ошибке
+    def stop_sorting(self):
+        """Полная остановка потока"""
+        if not hasattr(self, 'sorter') or not hasattr(self, 'thread'):
+            return
+            
+        # Отправляем команду остановки
+        self.sorter.stop()
+        
+        # Даем потоку время на корректное завершение
+        if self.thread.isRunning():
+            self.thread.quit()
+            if not self.thread.wait(3000):  # Увеличиваем время ожидания
+                self.thread.terminate()
+                self.log_error("Поток был принудительно остановлен")
+        
+        # Обновляем UI
+        # self.button_pause.setEnabled(False)
+        self.button_stop.setEnabled(False)
+        self.button_sort.setEnabled(True)
+        self.log_error("Сортировка остановлена пользователем")
+
+    def sorting_finished(self):
+        """Обработчик завершения сортировки"""
+        # self.button_pause.setEnabled(False)
+        self.button_stop.setEnabled(False)
+        self.button_sort.setEnabled(True)
+        self.export_files_with_notification("Сортировка закончена")
     @Slot(int)
     def update_files_moved_count(self,_):
         self.files_moved_count += 1
