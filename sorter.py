@@ -25,15 +25,15 @@ class Sorter(QObject):
     def get_file_names(self):
         try:
             if not os.path.isdir(self.folder_path):
-                print(f"[Ошибка] Папка {self.folder_path} не существует")
+                self.log("[Ошибка] Папка не существует: " + self.folder_path)
                 return []
-            file_names = []
-            for _, _, files in os.walk(self.folder_path):
+            file_paths = []
+            for root, _, files in os.walk(self.folder_path):
                 for f in files:
-                    file_names.append(f)  # сохраняем оригинальные имена без замены
-            return file_names
+                    file_paths.append(os.path.join(root, f))  # теперь это путь, а не просто имя
+            return file_paths
         except Exception as e:
-            print(f"[Ошибка] Ошибка в get_file_names: {e}")
+            self.log(f"[Ошибка] Ошибка в get_file_names: {e}")
             traceback.print_exc()
             return []
     @Slot()   
@@ -197,8 +197,9 @@ class Sorter(QObject):
     def count_files(self, statusStay):
         count = 0
         try:
-            file_names = self.get_file_names()
-            for file_name in file_names:
+            file_paths = self.get_file_names()
+            for file_path in file_paths:
+                file_name = os.path.basename(file_path)
                 try:
                     lat_file_name = self.replace_cyrillic_to_latin(file_name)
                     prefix = self.extract_prefix(file_name)
@@ -214,11 +215,12 @@ class Sorter(QObject):
 
     def move_files_to_folders(self, destination_folder, statusMove, statusStay):
         try:
-            file_names = self.get_file_names()
+            file_paths  = self.get_file_names()
             escd_dict = self.create_escd_dict()
             seen = {}
 
-            for file_name in file_names:
+            for file_path in file_paths:
+                file_name = os.path.basename(file_path)
                 try:
                     lat_file_name = self.replace_cyrillic_to_latin(file_name)
 
@@ -228,17 +230,17 @@ class Sorter(QObject):
                         project_code_match = re.search(r'(HB\d{3}|НВ\d{3})', lat_file_name)
                         project_code = project_code_match.group(1).upper() if project_code_match else "UNKNOWN"
                         target_folder = os.path.join(destination_folder, project_code, f"{project_code}.{alt_folder}")
-                        self.moveable(target_folder, file_name, seen, statusMove)
+                        self.moveable(target_folder, file_path, seen, statusMove)
                         continue 
 
                  
                     prefix = self.extract_prefix(file_name)
                     if prefix:
                         target_folder = self.handle_prefix_case(destination_folder, prefix, escd_dict)
-                        self.moveable(target_folder, file_name, seen, statusMove)
+                        self.moveable(target_folder, file_path, seen, statusMove)
                     elif not statusStay:
                         target_folder = os.path.join(destination_folder, "Прочие документы")
-                        self.moveable(target_folder, file_name, seen, statusMove)
+                        self.moveable(target_folder, file_path, seen, statusMove)
 
                 except Exception as e:
                     self.log(f"[Ошибка] Ошибка при обработке файла {file_name}: {e}")
@@ -262,11 +264,11 @@ class Sorter(QObject):
             traceback.print_exc()
         return ""
 
-    def moveable(self, target_folder, file_name, seen, statusMove):
+    def moveable(self, target_folder, file_path, seen, statusMove):
         try:
-            self.copy_file_to_folder(file_name, target_folder, seen, statusMove)
+            self.copy_file_to_folder(file_path, target_folder, seen, statusMove)
         except Exception as e:
-            self.log(f"[Ошибка] Ошибка в moveable для файла {file_name}: {e}")
+            self.log(f"[Ошибка] Ошибка в moveable для файла {file_path}: {e}")
             traceback.print_exc()
 
     def handle_prefix_case(self, destination_folder, prefix, escd_dict):
@@ -313,48 +315,35 @@ class Sorter(QObject):
             traceback.print_exc()
             return target_folder
 
-    def copy_file_to_folder(self, file_name, target_folder, seen, status):
+    def copy_file_to_folder(self, file_path, target_folder, seen, status):
         if self.check_pause_stop():
             return
 
         try:
             os.makedirs(target_folder, exist_ok=True)
-            
-            found_paths = []
-            for root, _, files in os.walk(self.folder_path):
+
+            file_name = os.path.basename(file_path)  # ← имя файла без пути
+            new_file_name = self.replace_cyrillic_to_latin(file_name)
+            dest_path = os.path.join(target_folder, new_file_name)
+
+            counter = 1
+            while os.path.exists(dest_path):
                 if self.check_pause_stop():
                     return
-                if file_name in files:
-                    found_paths.append(os.path.join(root, file_name))
-            
-            if not found_paths:
-                self.log_message.emit(f"[Ошибка] Файл не найден: {file_name}")
-                return
-                
-            for src_path in found_paths:
-                if self.check_pause_stop():
-                    return
-                    
-                new_file_name = self.replace_cyrillic_to_latin(file_name)
-                dest_path = os.path.join(target_folder, new_file_name)
-                
-                counter = 1
-                while os.path.exists(dest_path):
-                    if self.check_pause_stop():
-                        return
-                    name, ext = os.path.splitext(new_file_name)
-                    dest_path = os.path.join(target_folder, f"{name}_{counter}{ext}")
-                    counter += 1
-                    
-                if self.safe_copy(src_path, dest_path, move=status):
-                    self.file_moved.emit(1)
-                    self.log_message.emit(f"Успешно: {'перемещен' if status else 'скопирован'} {src_path} -> {dest_path}")
-                else:
-                    self.log_message.emit(f"Операция отменена для файла: {file_name}")
-                    
+                name, ext = os.path.splitext(new_file_name)
+                dest_path = os.path.join(target_folder, f"{name}_{counter}{ext}")
+                counter += 1
+
+            if self.safe_copy(file_path, dest_path, move=status):
+                self.file_moved.emit(1)
+                self.log_message.emit(f"Успешно: {'перемещен' if status else 'скопирован'} {file_path} -> {dest_path}")
+            else:
+                self.log_message.emit(f"Операция отменена для файла: {file_path}")
+
         except Exception as e:
-            self.log_message.emit(f"[Ошибка] Ошибка обработки файла {file_name}: {str(e)}")
+            self.log_message.emit(f"[Ошибка] Ошибка обработки файла {file_path}: {str(e)}")
             traceback.print_exc()
+
 
 
     def find_file_recursive(self, file_name):
