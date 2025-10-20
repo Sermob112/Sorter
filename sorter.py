@@ -18,8 +18,8 @@ class Sorter(QObject):
         self._paused = False
         self._pause_condition = QWaitCondition()
         self._stopped = False
-        self._current_operation = None 
-        self._pause_lock = QMutex() 
+        self._current_operation: dict[str, str] | None = None
+        self._lock = QMutex() 
 
 
     def get_file_names(self):
@@ -36,31 +36,64 @@ class Sorter(QObject):
             self.log(f"[Ошибка] Ошибка в get_file_names: {e}")
             traceback.print_exc()
             return []
-    @Slot()   
+    @Slot()
     def pause(self):
-        with QMutexLocker(self._pause_lock):
+        with QMutexLocker(self._lock):
             self._paused = True
-            self.log_message.emit("Операция приостановлена")
+        self.log_message.emit("Операция приостановлена")
+
     @Slot()
     def resume(self):
-        with QMutexLocker(self._pause_lock):
+        with QMutexLocker(self._lock):
             self._paused = False
-            self._pause_condition.wakeAll()
-            self.log_message.emit("Пауза: операция возобновлена")
+            self._cv.wakeAll()
+        self.log_message.emit("Пауза: операция возобновлена")
+
     @Slot()
     def stop(self):
-        with QMutexLocker(self._mutex):
+        with QMutexLocker(self._lock):
             self._stopped = True
-            self._condition.wakeAll()
-            # Прерываем текущую операцию копирования
-            if self._current_operation:
-                try:
-                    if os.path.exists(self._current_operation['dst']):
-                        os.remove(self._current_operation['dst'])
-                except Exception as e:
-                    self.log_message.emit(f"Ошибка при отмене операции: {str(e)}")
+            self._cv.wakeAll()
         self.log_message.emit("Операция остановлена")
 
+    def _wait_if_paused(self) -> bool:
+        with QMutexLocker(self._lock):
+            while self._paused and not self._stopped:
+                self._cv.wait(self._lock, 100)  # таймаут для регулярной проверки
+            return self._stopped
+
+    def safe_copy(self, src: str, dst: str, move: bool = False) -> bool:
+        self._current_operation = {"src": src, "dst": dst}
+        tmp = dst + ".part"
+        try:
+            if self._wait_if_paused():
+                return False
+            buf = 1024 * 1024
+            with open(src, "rb") as f_src, open(tmp, "wb") as f_dst:
+                while True:
+                    if self._wait_if_paused():
+                        return False
+                    chunk = f_src.read(buf)
+                    if not chunk:
+                        break
+                    f_dst.write(chunk)
+            os.replace(tmp, dst)  # атомарно
+            if move and not self._stopped:
+                try:
+                    os.remove(src)
+                except FileNotFoundError:
+                    pass
+            return True
+        except Exception as e:
+            self.log_message.emit(f"Ошибка копирования: {e}")
+            return False
+        finally:
+            self._current_operation = None
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
     def check_pause_stop(self):
         with QMutexLocker(self._mutex):
             while self._paused and not self._stopped:
@@ -70,10 +103,10 @@ class Sorter(QObject):
 
     def check_pause(self):
         """Неблокирующая проверка паузы"""
-        with QMutexLocker(self._pause_lock):
+        with QMutexLocker(self._lock):
             if self._paused and not self._stopped:
                 self.log_message.emit("Пауза: ожидание...")
-                self._pause_condition.wait(self._pause_lock, 100)  # Таймаут 100 мс
+                self._pause_condition.wait(self._lock, 100)  # Таймаут 100 мс
             return self._stopped
         
 
@@ -151,20 +184,20 @@ class Sorter(QObject):
         try:
             lat_file_name = self.replace_cyrillic_to_latin(file_name)
 
+            # 120-007-15-пр.HB600-106223 (любой набор разделителей)
+            pattern1 = (
+                r'120-\d{3}-\d{2,3}[\s._-]*пр[\s._-]*'
+                r'HB[\s\-_]*\d{3}[\s\-_]*\d{4,6}'
+            )
+            if re.search(pattern1, lat_file_name, re.IGNORECASE):
+                return "ОССЗ - Письма проектировщика"
+
             # ОССЗ - Письма
             if re.search(r'HB\d{3}-(ОССЗ|ЭДС)-\d{2,3}', lat_file_name, re.IGNORECASE):
                 return "ОССЗ - Письма"
 
             # ОССЗ - Письма проектировщика (формат HB600-93-07)
             if re.search(r'HB\d{3}-\d{2,3}-\d{2,4}', lat_file_name):
-                return "ОССЗ - Письма проектировщика"
-
-            # ОССЗ - Письма проектировщика (формат 120-007-15-пр.HB600-106223 с разными разделителями)
-            pattern1 = (
-            r'120-\d{3}-\d{2,3}[\s._-]*пр[\s._-]*'
-            r'HB[\s\-_]*\d{3}[\s\-_]*\d{4,6}'
-            )
-            if re.search(pattern1, lat_file_name, re.IGNORECASE):
                 return "ОССЗ - Письма проектировщика"
 
             # ТР-HB600 изм.1
@@ -180,6 +213,7 @@ class Sorter(QObject):
             traceback.print_exc()
 
         return None
+
 
 
 
@@ -227,8 +261,11 @@ class Sorter(QObject):
              
                     alt_folder = self.match_alternative_patterns(file_name)
                     if alt_folder:
-                        project_code_match = re.search(r'(HB\d{3}|НВ\d{3})', lat_file_name)
-                        project_code = project_code_match.group(1).upper() if project_code_match else "UNKNOWN"
+                        project_code_match = re.search(r'(HB|НВ)[\s._-]?(\d{3})', lat_file_name, re.IGNORECASE)
+                        if project_code_match:
+                            project_code = f"{project_code_match.group(1).upper()}{project_code_match.group(2)}"
+                        else:
+                            project_code = "ОШИБКА"
                         target_folder = os.path.join(destination_folder, project_code, f"{project_code}.{alt_folder}")
                         self.moveable(target_folder, file_path, seen, statusMove)
                         continue 
@@ -359,56 +396,3 @@ class Sorter(QObject):
             return None
 
 
-    # def move_files_to_folders(self, destination_folder):
-    #     """
-    #     Распределение файлов по папкам на основе префикса, системы ЕСКД РФ и обработки неправильных форматов.
-    #     """
-    #     file_names = self.get_file_names()
-    #     seen = {}
-    #     escd_dict = self.create_escd_dict("ESCD.xlsx")
-    #     for file_name in file_names:
-    #         prefix = self.extract_prefix(file_name)
-    #         lat_file_name = self.replace_cyrillic_to_latin(file_name)
-
-    #         if prefix:
-    #             project_code = prefix[:5]  
-    #             project_number = prefix[6:]  #
-
-    #             if re.match(r'^HB\d{3}\.\d{6}', prefix):
-    #                 target_folder = os.path.join(destination_folder, project_code)  
-
-    
-    #                 for i in range(2, len(project_number) + 1):
-    #                     sub_folder = project_number[:i]  
-                        
-    #                     if sub_folder in escd_dict:
-    #                         folder_name = f"{sub_folder} - {escd_dict[sub_folder]}" 
-    #                     else:
-    #                         folder_name = sub_folder 
-    #                     target_folder = os.path.join(target_folder, folder_name)
-    #             else:
-    #                 target_folder = os.path.join(destination_folder, project_code, "Прочие файлы")
-            
-    #         elif re.match(r'^HB\d{3}-\d{3}', lat_file_name):
-    #             project_code = lat_file_name[:5]  
-    #             target_folder = os.path.join(destination_folder, project_code, "ОССЗ.Письма проектировщика")
-            
-    #         elif re.match(r'^120-\d{3}', lat_file_name):
-    #             target_folder = os.path.join(destination_folder, "ОССЗ", "Письма")
-            
-    #         else:
-    #             target_folder = os.path.join(destination_folder, "Прочие документы")
-            
-    #         extension = os.path.splitext(file_name)[1][1:].lower()
-    #         if extension:
-    #             target_folder = os.path.join(target_folder, extension)
-
-    #         if not os.path.exists(target_folder):
-    #             os.makedirs(target_folder)
-
-    #         src_path = os.path.join(self.folder_path, file_name)
-    #         dest_path = os.path.join(target_folder, file_name)
-
-    #         if file_name not in seen:
-    #             shutil.copy(src_path, dest_path)  
-    #             seen[file_name] = True
