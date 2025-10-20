@@ -2,7 +2,7 @@ import os
 import re
 import shutil
 import traceback
-from model import File
+from model import File,ProjectFile  
 from PySide6.QtCore import *
 
 
@@ -100,7 +100,44 @@ class Sorter(QObject):
                 self._condition.wait(self._mutex)
             return self._stopped
         
+    def _extract_project_and_drawing(self, file_name: str) -> tuple[str, str] | None:
+        # пример: "26.00026-901-002", допускаем разные разделители и пробелы
+        s = self.replace_cyrillic_to_latin(file_name)
+        m = re.search(r'\b(\d{1,5})\s*[._-]\s*(\d{5}-\d{3}-\d{3})\b', s)
+        if m:
+            project = str(int(m.group(1)))  # нормализуем без ведущих нулей: "026" -> "26"
+            drawing = m.group(2)
+            return project, drawing
+        # fallback: если нашли только чертежный номер — попробу ем найти проект по БД
+        m2 = re.search(r'\b(\d{5}-\d{3}-\d{3})\b', s)
+        if m2:
+            drawing = m2.group(1)
+            rec = (ProjectFile
+                .select(ProjectFile.project)
+                .where(ProjectFile.drawing_number == drawing)
+                .first())
+            if rec and rec.project:
+                return str(rec.project), drawing
+        return None
 
+    def _resolve_project_folder_from_db(self, file_name: str, destination_folder: str) -> str | None:
+        pair = self._extract_project_and_drawing(file_name)
+        if not pair:
+            return None
+        project, drawing = pair
+        exists = (ProjectFile
+                .select()
+                .where((ProjectFile.project == project) &
+                        (ProjectFile.drawing_number == drawing))
+                .exists())
+        if not exists:
+            return None
+        target = os.path.join(destination_folder, project)
+        # двигаем ТОЛЬКО если папка уже существует — ничего не создаём
+        if not os.path.isdir(target):
+            self.log_message.emit(f"Пропуск: нет папки проекта '{project}' для файла '{file_name}'")
+            return None
+        return target
     def check_pause(self):
         """Неблокирующая проверка паузы"""
         with QMutexLocker(self._lock):
@@ -164,21 +201,34 @@ class Sorter(QObject):
         try:
             file_name_latin = self.replace_cyrillic_to_latin(file_name)
 
-            # Проверяем сначала паттерн "Письма проектировщика"
-            if re.search(r'120-\d{3}-\d{2,3}-пр[._\s-]*(HB\d{3}|НВ\d{3})[-_ ]?\d{4,6}', file_name_latin, re.IGNORECASE):
-                # Это "ОССЗ - Письма проектировщика", возвращаем None, чтобы приоритезировать этот вариант
-                return None
+            # 1. Приоритетное исключение для писем проектировщика
+            if re.search(
+                r'120-\d{3}-\d{2,3}-пр[._\s-]*(HB\d{3}|НВ\d{3})[-_ ]?\d{4,6}',
+                file_name_latin,
+                re.IGNORECASE
+            ):
+                return None  # Пусть их сначала обрабатывает match_alternative_patterns
 
-            # Ищем стандартный префикс HB600.360060
-            pattern = r'(HB\d{3})[\s._,-]?(\d{6})'
-            match = re.search(pattern, file_name_latin)
-
+            # 2. Универсальный поиск шаблона <любые буквы/цифры>.<6 цифр>
+            # Например: "ТПР2201.362671", "02020.362671"
+            match = re.search(r'([A-Za-zА-Яа-я0-9]{2,10})[\s._-]?(\d{6})', file_name_latin)
             if match:
-                return f"{match.group(1)}.{match.group(2)}"
+                prefix = f"{match.group(1)}.{match.group(2)}"
+                return prefix
+
+            # 3. Поддержка древних форматов 00036-010-012
+            match_alt = re.search(r'(\d{3,5}[-_]\d{2,3}[-_]\d{2,3})', file_name_latin)
+            if match_alt:
+                # Можно заменить "-" на "." для согласованности
+                prefix = match_alt.group(1).replace("-", ".").replace("_", ".")
+                return prefix
+
         except Exception as e:
             self.log(f"[Ошибка] Ошибка при извлечении префикса: {e}")
             traceback.print_exc()
+
         return None
+
 
     def match_alternative_patterns(self, file_name):
         try:
@@ -269,8 +319,12 @@ class Sorter(QObject):
                         target_folder = os.path.join(destination_folder, project_code, f"{project_code}.{alt_folder}")
                         self.moveable(target_folder, file_path, seen, statusMove)
                         continue 
+                       
 
-                 
+                    proj_target = self._resolve_project_folder_from_db(file_name, destination_folder)
+                    if proj_target:
+                        self.moveable(proj_target, file_path, seen, statusMove)
+                        continue
                     prefix = self.extract_prefix(file_name)
                     if prefix:
                         target_folder = self.handle_prefix_case(destination_folder, prefix, escd_dict)
@@ -279,6 +333,7 @@ class Sorter(QObject):
                         target_folder = os.path.join(destination_folder, "Прочие документы")
                         self.moveable(target_folder, file_path, seen, statusMove)
 
+                  
                 except Exception as e:
                     self.log(f"[Ошибка] Ошибка при обработке файла {file_name}: {e}")
                     traceback.print_exc()

@@ -11,6 +11,25 @@ class File(Model):
         database = db
         table_name = 'files'
 
+class ProjectFile(Model):
+    project = CharField()                 # Наименование проекта
+    drawing_number = CharField()          # Чертежный номер
+    document_name = CharField()           # Наименование документа
+    sheets = CharField(null=True)         # Листов, ед.
+    scale = CharField(null=True)          # Масштаб
+    format = CharField(null=True)         # Формат
+    approved_by = CharField(null=True)    # Утвердил
+    date = DateField(null=True)           # Дата (утверждения или создания)
+    company = CharField(null=True)        # Компания
+    file_link = CharField(null=True)      # Ссылка на файл
+    note = TextField(null=True)           # Примечание
+    file_size = CharField(null=True)      # Размер файла
+    file_date = DateField(null=True)      # Дата файла
+
+    class Meta:
+        database = db
+        table_name = 'project_files'
+
 # db.connect()
 # db.create_tables([File])
 
