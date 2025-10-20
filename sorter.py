@@ -120,24 +120,6 @@ class Sorter(QObject):
                 return str(rec.project), drawing
         return None
 
-    def _resolve_project_folder_from_db(self, file_name: str, destination_folder: str) -> str | None:
-        pair = self._extract_project_and_drawing(file_name)
-        if not pair:
-            return None
-        project, drawing = pair
-        exists = (ProjectFile
-                .select()
-                .where((ProjectFile.project == project) &
-                        (ProjectFile.drawing_number == drawing))
-                .exists())
-        if not exists:
-            return None
-        target = os.path.join(destination_folder, project)
-        # двигаем ТОЛЬКО если папка уже существует — ничего не создаём
-        if not os.path.isdir(target):
-            self.log_message.emit(f"Пропуск: нет папки проекта '{project}' для файла '{file_name}'")
-            return None
-        return target
     def check_pause(self):
         """Неблокирующая проверка паузы"""
         with QMutexLocker(self._lock):
@@ -147,41 +129,7 @@ class Sorter(QObject):
             return self._stopped
         
 
-    def safe_copy(self, src, dst, move=False):
-        """Безопасное копирование с поддержкой паузы"""
-        self._current_operation = {'src': src, 'dst': dst}
-        
-        try:
-            # Проверяем паузу/остановку перед началом
-            if self.check_pause() or self._stopped:
-                return False
 
-            buffer_size = 1024 * 1024  # 1MB
-            with open(src, 'rb') as f_src:
-                with open(dst, 'wb') as f_dst:
-                    while True:
-                        # Частая проверка паузы во время копирования
-                        if self.check_pause() or self._stopped:
-                            f_dst.close()
-                            if os.path.exists(dst):
-                                os.remove(dst)
-                            return False
-                        
-                        data = f_src.read(buffer_size)
-                        if not data:
-                            break
-                        f_dst.write(data)
-                        QThread.msleep(1)  
-
-            if move and not (self._paused or self._stopped):
-                os.remove(src)
-                
-            return True
-        except Exception as e:
-            self.log_message.emit(f"Ошибка копирования: {str(e)}")
-            return False
-        finally:
-            self._current_operation = None
     def log(self, message, error=None):
         """Универсальный метод для логирования сообщений"""
         full_message = message
@@ -297,64 +245,6 @@ class Sorter(QObject):
             traceback.print_exc()
         return count
 
-    def move_files_to_folders(self, destination_folder, statusMove, statusStay):
-        try:
-            file_paths  = self.get_file_names()
-            escd_dict = self.create_escd_dict()
-            seen = {}
-
-            for file_path in file_paths:
-                file_name = os.path.basename(file_path)
-                try:
-                    lat_file_name = self.replace_cyrillic_to_latin(file_name)
-
-             
-                    alt_folder = self.match_alternative_patterns(file_name)
-                    if alt_folder:
-                        project_code_match = re.search(r'(HB|НВ)[\s._-]?(\d{3})', lat_file_name, re.IGNORECASE)
-                        if project_code_match:
-                            project_code = f"{project_code_match.group(1).upper()}{project_code_match.group(2)}"
-                        else:
-                            project_code = "ОШИБКА"
-                        target_folder = os.path.join(destination_folder, project_code, f"{project_code}.{alt_folder}")
-                        self.moveable(target_folder, file_path, seen, statusMove)
-                        continue 
-                       
-
-                    proj_target = self._resolve_project_folder_from_db(file_name, destination_folder)
-                    if proj_target:
-                        self.moveable(proj_target, file_path, seen, statusMove)
-                        continue
-                    prefix = self.extract_prefix(file_name)
-                    if prefix:
-                        target_folder = self.handle_prefix_case(destination_folder, prefix, escd_dict)
-                        self.moveable(target_folder, file_path, seen, statusMove)
-                    elif not statusStay:
-                        target_folder = os.path.join(destination_folder, "Прочие документы")
-                        self.moveable(target_folder, file_path, seen, statusMove)
-
-                  
-                except Exception as e:
-                    self.log(f"[Ошибка] Ошибка при обработке файла {file_name}: {e}")
-                    traceback.print_exc()
-
-
-        except Exception as e:
-            self.log(f"[Ошибка] Ошибка в move_files_to_folders: {e}")
-            traceback.print_exc()
-        finally:
-            self.finished.emit()
-
-
-    def extract_description(self, file_name):
-        try:
-            parts = file_name.split("_")
-            if len(parts) > 1:
-                return parts[1].replace(".dwg", "").replace(".xlsx", "")
-        except Exception as e:
-            self.log(f"[Ошибка] Ошибка при извлечении описания из имени файла {file_name}: {e}")
-            traceback.print_exc()
-        return ""
 
     def moveable(self, target_folder, file_path, seen, statusMove):
         try:
@@ -363,61 +253,18 @@ class Sorter(QObject):
             self.log(f"[Ошибка] Ошибка в moveable для файла {file_path}: {e}")
             traceback.print_exc()
 
-    def handle_prefix_case(self, destination_folder, prefix, escd_dict):
-        try:
-            project_code = prefix[:5]
-            project_number = prefix[6:]
-            target_folder = os.path.join(destination_folder, project_code)
-
-            for i in range(2, len(project_number) + 1):
-                sub_folder = project_number[:i]
-                folder_description = escd_dict.get(sub_folder, "")
-                folder_name = f"{project_code}.{sub_folder} - {folder_description}" if folder_description else f"{project_code}.{sub_folder}"
-                target_folder = os.path.join(target_folder, folder_name)
-            return target_folder
-        except Exception as e:
-            self.log(f"[Ошибка] Ошибка при формировании пути по префиксу: {e}")
-            traceback.print_exc()
-            return destination_folder
-
-    def handle_specific_format_case_120(self, destination_folder, file_name, specific_folder):
-        try:
-            project_code = re.search(r'(HB\d{3})', file_name).group(1)
-            return os.path.join(destination_folder, project_code, f"{project_code}.{specific_folder}")
-        except Exception as e:
-            self.log(f"[Ошибка] Ошибка при разборе 120-файла: {e}")
-            traceback.print_exc()
-            return destination_folder
-
-    def handle_specific_format_case(self, destination_folder, file_name, specific_folder):
-        try:
-            project_code = file_name[:5]
-            return os.path.join(destination_folder, project_code, f"{project_code}.{specific_folder}")
-        except Exception as e:
-            self.log(f"[Ошибка] Ошибка при разборе HB-файла: {e}")
-            traceback.print_exc()
-            return destination_folder
-
-    def append_extension_folder(self, target_folder, file_name):
-        try:
-            extension = os.path.splitext(file_name)[1][1:].lower()
-            return os.path.join(target_folder, extension) if extension else target_folder
-        except Exception as e:
-            self.log(f"[Ошибка] Ошибка при добавлении папки по расширению: {e}")
-            traceback.print_exc()
-            return target_folder
+   
 
     def copy_file_to_folder(self, file_path, target_folder, seen, status):
         if self.check_pause_stop():
             return
-
         try:
             os.makedirs(target_folder, exist_ok=True)
+            file_name = os.path.basename(file_path)
+            # было: new_file_name = self.replace_cyrillic_to_latin(file_name)
+            new_file_name = self.sanitize_filename(file_name)  # ← очищаем имя файла
 
-            file_name = os.path.basename(file_path)  # ← имя файла без пути
-            new_file_name = self.replace_cyrillic_to_latin(file_name)
             dest_path = os.path.join(target_folder, new_file_name)
-
             counter = 1
             while os.path.exists(dest_path):
                 if self.check_pause_stop():
@@ -431,23 +278,156 @@ class Sorter(QObject):
                 self.log_message.emit(f"Успешно: {'перемещен' if status else 'скопирован'} {file_path} -> {dest_path}")
             else:
                 self.log_message.emit(f"Операция отменена для файла: {file_path}")
-
         except Exception as e:
             self.log_message.emit(f"[Ошибка] Ошибка обработки файла {file_path}: {str(e)}")
             traceback.print_exc()
 
+    
+    def _parse_project_and_code(self, file_name: str) -> tuple[str, str | None]:
+        base = os.path.basename(file_name)
+        m = re.match(r'^\s*([^\.\-\s]+)\s*[.\-]\s*(.*)$', base)
+        if not m:
+            return base.split()[0], None
+        project = m.group(1).strip()
+        rest = m.group(2)
+        m6 = re.search(r'(\d{6})', rest.replace(' ', ''))
+        code6 = m6.group(1) if m6 else None
+        return project, code6
 
+    def _build_hierarchy_path(self, destination_folder: str, project: str,
+                          code6: str | None, escd_dict: dict[str, str]) -> str:
+        base = os.path.join(destination_folder, self.sanitize_component(project))  # ← очистка проекта
+        path = base
+        if code6:
+            for L in range(2, min(len(code6), 6) + 1):
+                key = code6[:L]
+                if key in escd_dict:
+                    desc = escd_dict.get(key, "")
+                    dirname = f"{project}.{key} - {desc}" if desc else f"{project}.{key}"
+                    dirname = self.sanitize_component(dirname)  # ← очистка имени папки
+                    path = os.path.join(path, dirname)
+        return path
 
-    def find_file_recursive(self, file_name):
+    def sanitize_component(self, name: str) -> str:
+        """
+        Очищает имя папки/компонента пути:
+        - применяет replace_cyrillic_to_latin;
+        - удаляет вхождения вида "(123)";
+        - убирает запрещённые для Windows и нежелательные символы;
+        - схлопывает повторные пробелы/разделители и обрезает края.
+        """
         try:
-            file_name_encoded = file_name.encode('utf-8', errors='ignore').decode('utf-8')
-            for root, _, files in os.walk(self.folder_path):
-                for f in files:
-                    f_encoded = f.encode('utf-8', errors='ignore').decode('utf-8')
-                    if f_encoded == file_name_encoded:
-                        return os.path.join(root, f)
-            return None
-        except UnicodeError:
-            return None
+            name = self.replace_cyrillic_to_latin(name)
+            # убрать (68), ( 12 ), любые скобки с числами
+            name = re.sub(r'\(\s*\d+\s*\)', '', name)
+            # запреты Windows и нежелательные символы (добавлен '!')
+            name = re.sub(r'[<>:"/\\|?*\!]+', '', name)
+            # заменить множественные пробелы на один
+            name = re.sub(r'\s+', ' ', name)
+            # схлопнуть подряд идущие точки/дефисы/подчёркивания
+            name = re.sub(r'([.\-_])\1+', r'\1', name)
+            # обрезать пробелы/точки/дефисы по краям
+            name = name.strip(' .-_')
+            # подстраховка на случай полного очищения
+            return name if name else 'unnamed'
+        except Exception as e:
+            self.log(f"[Ошибка] sanitize_component: {e}")
+            traceback.print_exc()
+            return name
+
+    def sanitize_filename(self, filename: str) -> str:
+        """
+        Возвращает очищённое имя файла:
+        - сначала replace_cyrillic_to_latin;
+        - очистка базовой части (без расширения) по тем же правилам;
+        - расширение сохраняется.
+        """
+        try:
+            filename = self.replace_cyrillic_to_latin(filename)
+            base, ext = os.path.splitext(filename)
+            base = re.sub(r'\(\s*\d+\s*\)', '', base)                 # убрать (68)
+            base = re.sub(r'[<>:"/\\|?*\!]+', '', base)               # убрать ! и запрещённые
+            base = re.sub(r'\s+', ' ', base)                          # схлопнуть пробелы
+            base = re.sub(r'([.\-_])\1+', r'\1', base)                # схлопнуть разделители
+            base = base.strip(' .-_')                                  # обрезать края
+            if not base:
+                base = 'unnamed'
+            # нормализуем расширение (оставляем точку и исходный регистр/можно .lower())
+            return f"{base}{ext}"
+        except Exception as e:
+            self.log(f"[Ошибка] sanitize_filename: {e}")
+            traceback.print_exc()
+            return filename
+        
 
 
+    def _build_hierarchy_from_prefix(self, destination_folder: str, prefix: str,
+                                 escd_dict: dict[str, str]) -> str:
+        """
+        prefix вида "HB900.360061" или "00036.010012" -> проект = часть до точки,
+        number = часть после точки; строим проект/проект.K2 - .../ ... /проект.Kn - ...
+        по всем ключам из escd_dict (2..6), если присутствуют.
+        """
+        try:
+            if "." not in prefix:
+                return destination_folder
+            project_code, number = prefix.split(".", 1)
+            base = os.path.join(destination_folder, project_code)
+            path = base
+            number = number.strip()
+            for L in range(2, min(len(number), 6) + 1):
+                key = number[:L]
+                if key in escd_dict:
+                    desc = escd_dict.get(key, "")
+                    dirname = f"{project_code}.{key} - {desc}" if desc else f"{project_code}.{key}"
+                    path = os.path.join(path, dirname)
+            return path
+        except Exception as e:
+            self.log(f"[Ошибка] Ошибка при сборке пути по старому префиксу: {e}")
+            traceback.print_exc()
+            return destination_folder
+        
+
+    def move_files_to_folders(self, destination_folder, statusMove, statusStay):
+        try:
+            file_paths = self.get_file_names()
+            escd_dict = self.create_escd_dict()
+            seen = {}
+
+            for file_path in file_paths:
+                file_name = os.path.basename(file_path)
+                try:
+                    # 1) Новый приоритет: проект + 6-значный код -> многоуровневая иерархия
+                    project, code6 = self._parse_project_and_code(file_name)
+                    target_folder = self._build_hierarchy_path(destination_folder, project, code6, escd_dict)
+                    if target_folder and target_folder != os.path.join(destination_folder, project):
+                        self.moveable(target_folder, file_path, seen, statusMove)
+                        continue
+
+                    # 2) Старый префикс (низкий приоритет): extract_prefix
+                    prefix = self.extract_prefix(file_name)
+                    if prefix:
+                        target_folder = self._build_hierarchy_from_prefix(destination_folder, prefix, escd_dict)
+                        self.moveable(target_folder, file_path, seen, statusMove)
+                        continue
+
+                    # 3) Самый последний шаг: альтернативные паттерны
+                    alt_folder = self.match_alternative_patterns(file_name)
+                    if alt_folder:
+                        # Складываем внутрь папки проекта (без дублирования названия проекта в подпапке)
+                        target_folder = os.path.join(destination_folder, project, alt_folder)
+                        self.moveable(target_folder, file_path, seen, statusMove)
+                        continue
+
+                    # 4) Фоллбек: просто в проект
+                    self.moveable(os.path.join(destination_folder, project), file_path, seen, statusMove)
+
+                except Exception as e:
+                    self.log(f"[Ошибка] Ошибка при обработке файла {file_name}: {e}")
+                    traceback.print_exc()
+
+        except Exception as e:
+            self.log(f"[Ошибка] Ошибка в move_files_to_folders: {e}")
+            traceback.print_exc()
+        finally:
+            self.finished.emit()
