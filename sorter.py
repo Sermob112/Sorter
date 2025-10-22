@@ -255,33 +255,6 @@ class Sorter(QObject):
 
    
 
-    def copy_file_to_folder(self, file_path, target_folder, seen, status):
-        if self.check_pause_stop():
-            return
-        try:
-            os.makedirs(target_folder, exist_ok=True)
-            file_name = os.path.basename(file_path)
-            # было: new_file_name = self.replace_cyrillic_to_latin(file_name)
-            new_file_name = self.sanitize_filename(file_name)  # ← очищаем имя файла
-
-            dest_path = os.path.join(target_folder, new_file_name)
-            counter = 1
-            while os.path.exists(dest_path):
-                if self.check_pause_stop():
-                    return
-                name, ext = os.path.splitext(new_file_name)
-                dest_path = os.path.join(target_folder, f"{name}_{counter}{ext}")
-                counter += 1
-
-            if self.safe_copy(file_path, dest_path, move=status):
-                self.file_moved.emit(1)
-                self.log_message.emit(f"Успешно: {'перемещен' if status else 'скопирован'} {file_path} -> {dest_path}")
-            else:
-                self.log_message.emit(f"Операция отменена для файла: {file_path}")
-        except Exception as e:
-            self.log_message.emit(f"[Ошибка] Ошибка обработки файла {file_path}: {str(e)}")
-            traceback.print_exc()
-
     
     def _parse_project_and_code(self, file_name: str) -> tuple[str, str | None]:
         base = os.path.basename(file_name)
@@ -431,3 +404,182 @@ class Sorter(QObject):
             traceback.print_exc()
         finally:
             self.finished.emit()
+
+    def _lookup_document_name(self, file_name: str) -> str | None:
+        """
+        Возвращает очищенное (для имени файла) наименование документа из БД
+        по паре (проект, 6-значный код), либо None, если не найдено/пусто.
+        """
+        try:
+            project, code6 = self._parse_project_and_code(file_name)
+            if not code6:
+                return None
+
+            # 1) Проект + точное/частичное совпадение кода в чертежном номере
+            rec = (
+                ProjectFile
+                .select(ProjectFile.document_name)
+                .where(
+                    (ProjectFile.project == project) &
+                    ((ProjectFile.drawing_number == code6) |
+                    (ProjectFile.drawing_number.contains(code6)))
+                )
+                .first()
+            )
+
+            # 2) Fallback: поиск без проекта (если формат чертежного номера в БД иной)
+            if not rec:
+                rec = (
+                    ProjectFile
+                    .select(ProjectFile.document_name)
+                    .where(
+                        (ProjectFile.drawing_number == code6) |
+                        (ProjectFile.drawing_number.contains(code6))
+                    )
+                    .first()
+                )
+
+            if not rec or not rec.document_name:
+                return None
+
+            title = str(rec.document_name).strip()
+            # Игнорируем технические значения
+            if title.lower() == "нет данных" or title == "":
+                return None
+
+            # Очистка для безопасного включения в имя файла
+            return self.sanitize_component(title)
+        except Exception as e:
+            self.log(f"[Ошибка] _lookup_document_name: {e}")
+            traceback.print_exc()
+            return None
+        
+
+
+
+    def _infer_drawing_candidates(self, file_name: str) -> tuple[str, list[str]]:
+        """
+        Возвращает (project, candidates) — проект и список возможных вариантов чертежного номера
+        для поиска в БД: полная базовая строка, ее дефисная версия, 6-значный код и комбинации.
+        """
+        base = os.path.splitext(os.path.basename(file_name))[0]
+        project, code6 = self._parse_project_and_code(file_name)
+        # Варианты базового: как есть и с заменой разделителей на дефис
+        hyph = re.sub(r'[.\s_]+', '-', base)
+        candidates = [base, hyph]
+
+        # Трёхгруппный формат типа 14701-212-011(ВО) если присутствует в базовой строке
+        m3 = re.search(r'\b\d{5}-\d{3}-\d{3}[A-Za-zА-Яа-я]*\b', base)
+        if m3:
+            candidates.append(m3.group(0))
+
+        # Если есть 6-значный код — добавить комбинации
+        if code6:
+            candidates.extend([code6, f"{project}-{code6}", f"{project}.{code6}"])
+
+        # Уникализировать, сохранить порядок
+        seen = set()
+        uniq = []
+        for c in candidates:
+            if c not in seen:
+                uniq.append(c)
+                seen.add(c)
+        return project, uniq
+    
+
+
+    def _lookup_document_name_any(self, file_name: str) -> str | None:
+        """
+        Ищет ProjectFile.document_name по набору кандидатов drawing_number и проекту.
+        Приоритет: точное совпадение с проектом → contains с проектом → точное без проекта → contains без проекта.
+        """
+        try:
+            project, candidates = self._infer_drawing_candidates(file_name)
+
+            # 1) Точное совпадение + проект
+            for cand in candidates:
+                rec = (ProjectFile
+                    .select(ProjectFile.document_name)
+                    .where((ProjectFile.project == project) &
+                            (ProjectFile.drawing_number == cand))
+                    .first())
+                if rec and rec.document_name:
+                    title = str(rec.document_name).strip()
+                    return self.sanitize_component(title) if title and title.lower() != "нет данных" else None
+
+            # 2) Содержит + проект
+            for cand in candidates:
+                rec = (ProjectFile
+                    .select(ProjectFile.document_name)
+                    .where((ProjectFile.project == project) &
+                            (ProjectFile.drawing_number.contains(cand)))
+                    .first())
+                if rec and rec.document_name:
+                    title = str(rec.document_name).strip()
+                    return self.sanitize_component(title) if title and title.lower() != "нет данных" else None
+
+            # 3) Точное без проекта
+            for cand in candidates:
+                rec = (ProjectFile
+                    .select(ProjectFile.document_name)
+                    .where(ProjectFile.drawing_number == cand)
+                    .first())
+                if rec and rec.document_name:
+                    title = str(rec.document_name).strip()
+                    return self.sanitize_component(title) if title and title.lower() != "нет данных" else None
+
+            # 4) Содержит без проекта
+            for cand in candidates:
+                rec = (ProjectFile
+                    .select(ProjectFile.document_name)
+                    .where(ProjectFile.drawing_number.contains(cand))
+                    .first())
+                if rec and rec.document_name:
+                    title = str(rec.document_name).strip()
+                    return self.sanitize_component(title) if title and title.lower() != "нет данных" else None
+
+            return None
+        except Exception as e:
+            self.log(f"[Ошибка] _lookup_document_name_any: {e}")
+            traceback.print_exc()
+            return None
+        
+
+    def copy_file_to_folder(self, file_path, target_folder, seen, status):
+        if self.check_pause_stop():
+            return
+        try:
+            os.makedirs(target_folder, exist_ok=True)
+            orig_name = os.path.basename(file_path)
+
+            # Базовая очистка имени файла (латинизация, удаление "!", "(68)" и т.п.)
+            clean_file_name = self.sanitize_filename(orig_name)
+            name, ext = os.path.splitext(clean_file_name)
+
+            # Подбор разделителя по форме базового имени
+            sep = '_' if '.' in name and '-' not in name else '-'
+
+            # Поиск названия документа по любому поддерживаемому формату
+            doc_title = self._lookup_document_name_any(orig_name)
+            if doc_title and not name.endswith(doc_title):
+                name = f"{name}{sep}{doc_title}"
+
+            new_file_name = f"{name}{ext}"
+            dest_path = os.path.join(target_folder, new_file_name)
+
+            counter = 1
+            while os.path.exists(dest_path):
+                if self.check_pause_stop():
+                    return
+                base, ext2 = os.path.splitext(new_file_name)
+                dest_path = os.path.join(target_folder, f"{base}_{counter}{ext2}")
+                counter += 1
+
+            if self.safe_copy(file_path, dest_path, move=status):
+                self.file_moved.emit(1)
+                self.log_message.emit(f"Успешно: {'перемещен' if status else 'скопирован'} {file_path} -> {dest_path}")
+            else:
+                self.log_message.emit(f"Операция отменена для файла: {orig_name}")
+        except Exception as e:
+            self.log_message.emit(f"[Ошибка] Ошибка обработки файла {file_path}: {str(e)}")
+            traceback.print_exc()
