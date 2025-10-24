@@ -552,17 +552,15 @@ class Sorter(QObject):
             os.makedirs(target_folder, exist_ok=True)
             orig_name = os.path.basename(file_path)
 
-            # Базовая очистка имени файла (латинизация, удаление "!", "(68)" и т.п.)
+            # Базовая очистка имени файла
             clean_file_name = self.sanitize_filename(orig_name)
             name, ext = os.path.splitext(clean_file_name)
 
-            # Подбор разделителя по форме базового имени
-            sep = '_' if '.' in name and '-' not in name else '-'
-
-            # Поиск названия документа по любому поддерживаемому формату
-            doc_title = self._lookup_document_name_any(orig_name)
-            if doc_title and not name.endswith(doc_title):
-                name = f"{name}{sep}{doc_title}"
+            # Всегда дописываем через "_" при наличии названия из БД
+            doc_title = self._lookup_document_name_any(orig_name)  # использует sanitize_component внутри
+            if doc_title:
+                if not name.endswith(f"_{doc_title}"):
+                    name = f"{name}_{doc_title}"
 
             new_file_name = f"{name}{ext}"
             dest_path = os.path.join(target_folder, new_file_name)
@@ -577,7 +575,9 @@ class Sorter(QObject):
 
             if self.safe_copy(file_path, dest_path, move=status):
                 self.file_moved.emit(1)
-                self.log_message.emit(f"Успешно: {'перемещен' if status else 'скопирован'} {file_path} -> {dest_path}")
+                self.log_message.emit(
+                    f"Успешно: {'перемещен' if status else 'скопирован'} {file_path} -> {dest_path}"
+                )
             else:
                 self.log_message.emit(f"Операция отменена для файла: {orig_name}")
         except Exception as e:
