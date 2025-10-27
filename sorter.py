@@ -4,8 +4,16 @@ import shutil
 import traceback
 from model import File,ProjectFile  
 from PySide6.QtCore import *
-
-
+try:
+    from pypdf import PdfMerger  # для новых pypdf
+except Exception:
+    try:
+        from pypdf.merger import PdfMerger  # альтернативный путь
+    except Exception:
+        try:
+            from PyPDF2 import PdfMerger  # для старых PyPDF2
+        except Exception:
+            PdfMerger = None
 class Sorter(QObject):
     file_moved = Signal(int)
     finished = Signal()
@@ -20,7 +28,7 @@ class Sorter(QObject):
         self._stopped = False
         self._current_operation: dict[str, str] | None = None
         self._lock = QMutex() 
-
+        self._moved_pdfs: list[str] = []
 
     def get_file_names(self):
         try:
@@ -361,7 +369,7 @@ class Sorter(QObject):
             return destination_folder
         
 
-    def move_files_to_folders(self, destination_folder, statusMove, statusStay):
+    def move_files_to_folders(self, destination_folder, statusMove, statusStay, merge_enabled):
         try:
             file_paths = self.get_file_names()
             escd_dict = self.create_escd_dict()
@@ -398,7 +406,12 @@ class Sorter(QObject):
                 except Exception as e:
                     self.log(f"[Ошибка] Ошибка при обработке файла {file_name}: {e}")
                     traceback.print_exc()
-
+                finally:
+        # Последняя стадия: слияние листов
+                    try:
+                        self.merge_pdf_siblings(merge_enabled)
+                    except Exception as e:
+                        self.log_message.emit(f"[PDF] Ошибка финального слияния: {e}")
         except Exception as e:
             self.log(f"[Ошибка] Ошибка в move_files_to_folders: {e}")
             traceback.print_exc()
@@ -572,7 +585,7 @@ class Sorter(QObject):
                 base, ext2 = os.path.splitext(new_file_name)
                 dest_path = os.path.join(target_folder, f"{base}_{counter}{ext2}")
                 counter += 1
-
+            
             if self.safe_copy(file_path, dest_path, move=status):
                 self.file_moved.emit(1)
                 self.log_message.emit(
@@ -580,6 +593,179 @@ class Sorter(QObject):
                 )
             else:
                 self.log_message.emit(f"Операция отменена для файла: {orig_name}")
+
+            if os.path.splitext(dest_path)[1].lower() == ".pdf":
+                # Поворот выполняется сразу (как у вас уже сделано)
+                try:
+                    self.rotate_pdf_to_portrait(dest_path)
+                except Exception as e:
+                    self.log_message.emit(f"[PDF] Ошибка поворота {os.path.basename(dest_path)}: {e}")
+                # Буферизуем для последующего слияния
+                self._moved_pdfs.append(dest_path)
+
         except Exception as e:
             self.log_message.emit(f"[Ошибка] Ошибка обработки файла {file_path}: {str(e)}")
             traceback.print_exc()
+    
+
+    def _merge_key_from_name(self, file_path: str) -> tuple[str, str, str | None] | None:
+        try:
+            stem = os.path.splitext(os.path.basename(file_path))[0]
+
+            # 1) Убрать конечные '(n)'
+            stem = re.sub(r'\(\s*\d+\s*\)\s*$', '', stem).strip()
+            # 2) Убрать ВСЕ вхождения 'Лист N' (глобально)
+            stem_no_list = re.sub(r'\s*лист\s*\d+\s*', ' ', stem, flags=re.IGNORECASE)
+            stem_no_list = re.sub(r'\s+', ' ', stem_no_list).strip()
+
+            # 3) Разделить на '<чертёж>[_]<титул>' по последнему '_'
+            idx = stem_no_list.rfind('_')
+            if idx != -1:
+                drawing_part = stem_no_list[:idx].strip()
+                title_part = stem_no_list[idx+1:].strip()
+                title_part = re.sub(r'\s*лист\s*\d+\s*', ' ', title_part, flags=re.IGNORECASE)
+                title_part = re.sub(r'\s+', ' ', title_part).strip()
+                title = title_part if title_part else None
+            else:
+                drawing_part = stem_no_list
+                title = None
+
+            # 4) Проект = всё до первой '.' или '-'
+            m_proj = re.match(r'^\s*([^\.\-\s]+)\s*[.\-]', drawing_part)
+            project = m_proj.group(1) if m_proj else drawing_part.split()[0]
+
+            drawing_key = drawing_part
+            return project, drawing_key, title
+        except Exception:
+            return None
+
+
+        
+    def merge_pdf_siblings(self, merge_enabled: bool):
+        if not merge_enabled:
+            return
+
+        groups: dict[tuple[str, str], list[tuple[int, str, str | None]]] = {}
+        titles_by_key: dict[tuple[str, str], list[str]] = {}
+
+        for p in self._moved_pdfs:
+            if os.path.splitext(p)[1].lower() != ".pdf":
+                continue
+            key = self._merge_key_from_name(p)
+            if not key:
+                continue
+            project, drawing_key, title = key
+            stem = os.path.splitext(os.path.basename(p))[0]
+            m = re.search(r'лист\s*(\d+)', stem, flags=re.IGNORECASE)
+            num = int(m.group(1)) if m else 10**9
+            gk = (project, drawing_key)
+            groups.setdefault(gk, []).append((num, p, title))
+            if title:
+                titles_by_key.setdefault(gk, []).append(title)
+
+        for (project, drawing_key), items in groups.items():
+            if len(items) < 2:
+                continue
+            items.sort(key=lambda x: x[0])
+
+            # Выбор общего title
+            title_candidates = titles_by_key.get((project, drawing_key), [])
+            title_unique = sorted(set([t for t in title_candidates if t]), key=len, reverse=True)
+            common_title = None
+            if len(title_unique) == 1:
+                common_title = title_unique[0]
+            elif len(title_unique) > 1:
+                common_title = title_unique[0]
+                self.log_message.emit(
+                    f"[PDF] Несовпадающие названия у листов {drawing_key}: {title_unique}"
+                )
+
+            out_dir = os.path.dirname(items[0][1])
+            out_name = f"{drawing_key}.pdf" if not common_title else f"{drawing_key}_{common_title}.pdf"
+            out_path = os.path.join(out_dir, out_name)
+            tmp_path = out_path + ".tmp"
+
+            try:
+                if PdfMerger is not None:
+                    merger = PdfMerger()
+                    for _, f, _ in items:
+                        merger.append(f)
+                    with open(tmp_path, "wb") as fo:
+                        merger.write(fo)
+                    try:
+                        merger.close()
+                    except Exception:
+                        pass
+                else:
+                    writer = PdfWriter()
+                    for _, f, _ in items:
+                        reader = PdfReader(f)
+                        for page in reader.pages:
+                            writer.add_page(page)
+                    with open(tmp_path, "wb") as fo:
+                        writer.write(fo)
+
+                os.replace(tmp_path, out_path)
+
+                outs = {os.path.normcase(out_path)}
+                for _, f, _ in items:
+                    try:
+                        if os.path.normcase(f) not in outs and os.path.exists(f):
+                            os.remove(f)
+                    except Exception as e:
+                        self.log_message.emit(f"[PDF] Не удалось удалить лист {os.path.basename(f)}: {e}")
+                self.log_message.emit(f"[PDF] Объединено: {drawing_key} -> {out_name}")
+            except Exception as e:
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except Exception:
+                    pass
+                self.log_message.emit(f"[PDF] Ошибка слияния {drawing_key}: {e}")
+                continue
+
+
+    def rotate_pdf_to_portrait(self, pdf_path: str) -> None:
+        try:
+            from pypdf import PdfReader, PdfWriter
+        except Exception as e:
+            self.log_message.emit(f"[PDF] Нет pypdf: {e} — пропуск {os.path.basename(pdf_path)}")
+            return
+        try:
+            reader = PdfReader(pdf_path)
+            writer = PdfWriter()
+            changed = False
+
+            for page in reader.pages:
+                # Текущие размеры и поворот
+                w = float(page.mediabox.width)
+                h = float(page.mediabox.height)
+                rotation = getattr(page, "rotation", 0) or 0
+
+                # Эффективная ориентация с учётом поворота
+                # landscape, если ширина "на экране" больше высоты
+                effective_landscape = ((w > h and rotation % 180 == 0) or
+                                    (h > w and rotation % 180 != 0))
+
+                if effective_landscape:
+                    # Совместимость с разными версиями pypdf/PyPDF2
+                    try:
+                        page.rotate(90)
+                    except Exception:
+                        try:
+                            page.rotate_clockwise(90)
+                        except Exception:
+                            # запасной вариант через set rotation
+                            page.rotate(90)
+                    changed = True
+
+                writer.add_page(page)
+
+            if changed:
+                tmp_path = pdf_path + ".tmp"
+                with open(tmp_path, "wb") as f:
+                    writer.write(f)
+                os.replace(tmp_path, pdf_path)
+                self.log_message.emit(f"[PDF] Поворот в портрет: {os.path.basename(pdf_path)}")
+        except Exception as e:
+            self.log_message.emit(f"[PDF] Ошибка поворота {os.path.basename(pdf_path)}: {e}")

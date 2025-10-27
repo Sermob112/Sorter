@@ -86,6 +86,7 @@ class DuplicateChecker(QWidget):
         self.label_files_count = QLabel("Количество файлов:")
         self.checkboxMove = QCheckBox("Переместить файлы.")
         self.checkboxStay = QCheckBox("Переместить\Копировать файлы, если соответсвуют формату.")
+        self.checkboxJoiner = QCheckBox("Объединить PDF листы в один PDF файл")
         self.label_files_moved_count = QLabel("Файлов перемещено: 0")
 
         layout.addWidget(self.label_folder1)
@@ -99,8 +100,9 @@ class DuplicateChecker(QWidget):
         layout.addWidget(self.label_files_count)
         layout.addWidget(self.label_duplicates)
         layout.addWidget(self.label_files_moved_count)
-        layout.addWidget(self.checkboxMove)
-        layout.addWidget(self.checkboxStay)
+        # layout.addWidget(self.checkboxMove)
+        # layout.addWidget(self.checkboxStay)
+        layout.addWidget(self.checkboxJoiner)
 
         self.button_layout = QHBoxLayout()
 
@@ -251,7 +253,8 @@ class DuplicateChecker(QWidget):
             self.thread.started.connect(lambda: self.sorter.move_files_to_folders(
                 self.directory_path_for_sort,
                 self.checkboxMove.isChecked(),
-                self.checkboxStay.isChecked()
+                self.checkboxStay.isChecked(),
+                self.checkboxJoiner.isChecked()
             ))
 
             self.fc = self.sorter.count_files(self.checkboxStay.isChecked())
